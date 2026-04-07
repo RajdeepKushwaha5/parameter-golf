@@ -1,0 +1,10 @@
+{
+  "author": "Rajdeep Kushwaha",
+  "github_id": "RajdeepKushwaha5",
+  "name": "SP8192 + Triple Loop + SDClip + QK5 + Int6/Int8 + SLOT24 + Score-First TTT",
+  "blurb": "SP8192 tokenizer (8192 vocab BPE). Triple loop depth recurrence (layers 4,5 x3 passes, start 35%). Int6 GPTQ for attn/MLP, int8 for embeddings. SDClip k=12.85/20, QK-Gain 5.0. 24-step SLOT with cosine LR + warm-started logit bias. Legal Score-First TTT (3 epochs, SGD+momentum). Parallel residuals (GPT-J style) last 4 layers. Muon WD 0.085, EMA 0.997. 11L XSA-all, GQA 8h/4kv, model_dim=512.",
+  "date": "2026-04-07T00:00:00Z",
+  "val_loss": 0.0,
+  "val_bpb": 0.0,
+  "bytes_total": 0
+}

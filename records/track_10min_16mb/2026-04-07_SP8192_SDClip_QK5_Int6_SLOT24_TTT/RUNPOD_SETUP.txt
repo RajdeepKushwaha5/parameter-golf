@@ -1,0 +1,144 @@
+================================================================================
+  RUNPOD SETUP & RUN GUIDE
+  SP8192 + Triple Loop + SDClip + QK5 + Int6/Int8 + SLOT24 + Score-First TTT
+================================================================================
+
+REQUIRED INSTANCE:
+  - 8x H100 80GB SXM (RunPod "8x H100 SXM" template)
+  - PyTorch 2.9.1+cu128 (NOT 2.11 — see PR #1420 for why)
+  - ~200GB disk (for data + checkpoints)
+
+================================================================================
+STEP 1: INSTALL DEPENDENCIES
+================================================================================
+
+pip install sentencepiece numpy huggingface-hub
+pip install flash_attn_3 --find-links https://windreamer.github.io/flash-attention3-wheels/cu128_torch291
+
+# Verify flash attention 3 works:
+python3 -c "from flash_attn_interface import flash_attn_func; print('Flash Attn 3 OK')"
+
+================================================================================
+STEP 2: CLONE REPO
+================================================================================
+
+git clone https://github.com/RajdeepKushwaha5/parameter-golf.git
+cd parameter-golf
+
+================================================================================
+STEP 3: DOWNLOAD SP8192 DATA
+================================================================================
+
+# Downloads 128 train shards + 1 val shard + tokenizer from kevclark/parameter-golf HF repo
+# Takes ~15-30 min depending on network speed
+MATCHED_FINEWEB_REPO_ID=kevclark/parameter-golf python3 data/cached_challenge_fineweb.py --variant sp8192 --train-shards 100
+
+# Verify data is present:
+ls data/datasets/fineweb10B_sp8192/fineweb_train_*.bin | wc -l   # should be >= 100
+ls data/datasets/fineweb10B_sp8192/fineweb_val_*.bin | wc -l     # should be 1
+ls data/tokenizers/fineweb_8192_bpe.model                        # should exist
+
+================================================================================
+STEP 4: RUN TRAINING (SEED 1)
+================================================================================
+
+cd records/track_10min_16mb/2026-04-07_SP8192_SDClip_QK5_Int6_SLOT24_TTT
+
+# Single seed run (~600s train + ~120s eval):
+SEED=1234 torchrun --standalone --nproc_per_node=8 train_gpt.py 2>&1 | tee run_seed1234.log
+
+# Key output lines to look for:
+#   step:XXXX/20000 val_loss:X.XXXX val_bpb:X.XXXX   (training val checks)
+#   final_int6_roundtrip val_loss:X.XXXX val_bpb:X.XXXX
+#   final_int6_sliding_window val_loss:X.XXXX val_bpb:X.XXXX
+#   final_int6_slot val_loss:X.XXXX val_bpb:X.XXXX
+#   final_int6_ttt val_loss:X.XXXX val_bpb:X.XXXX     <-- THIS IS THE SUBMISSION SCORE
+
+================================================================================
+STEP 5: RUN REMAINING SEEDS (for 3-seed or 5-seed mean)
+================================================================================
+
+SEED=42   torchrun --standalone --nproc_per_node=8 train_gpt.py 2>&1 | tee run_seed42.log
+SEED=1    torchrun --standalone --nproc_per_node=8 train_gpt.py 2>&1 | tee run_seed1.log
+
+# Optional 5-seed (for stronger PR):
+SEED=1337 torchrun --standalone --nproc_per_node=8 train_gpt.py 2>&1 | tee run_seed1337.log
+SEED=2025 torchrun --standalone --nproc_per_node=8 train_gpt.py 2>&1 | tee run_seed2025.log
+
+================================================================================
+STEP 6: COLLECT RESULTS
+================================================================================
+
+# Extract final BPB from each log:
+grep "final_int6_ttt_exact" run_seed*.log
+
+# Expected output format:
+#   run_seed1234.log: final_int6_ttt_exact val_loss:X.XXXXXXXX val_bpb:X.XXXXXXXX
+#   run_seed42.log:   final_int6_ttt_exact val_loss:X.XXXXXXXX val_bpb:X.XXXXXXXX
+#   run_seed1.log:    final_int6_ttt_exact val_loss:X.XXXXXXXX val_bpb:X.XXXXXXXX
+
+# If TTT is slower than expected, use SLOT score instead:
+grep "final_int6_slot_exact" run_seed*.log
+
+# Compute mean BPB and update submission.json with actual values.
+
+================================================================================
+STEP 7: UPDATE submission.json
+================================================================================
+
+# After collecting all seed results, update submission.json:
+#   - val_bpb: mean of all seeds' final_int6_ttt val_bpb
+#   - val_loss: mean of all seeds' final_int6_ttt val_loss
+#   - bytes_total: from "Total submission size int6+lzma" in any log
+
+================================================================================
+ENVIRONMENT VARIABLES (all optional, defaults are tuned)
+================================================================================
+
+  SEED=1234                    # Random seed (default: 42)
+  VOCAB_SIZE=8192              # Already set to 8192
+  NUM_LOOPS=3                  # Triple loop (layers 4,5 run 3 extra times)
+  ENABLE_LOOPING_AT=0.35       # Activate depth recurrence at 35% wallclock
+  RECUR_LAYERS="4,5"           # Which layers to recur
+  SLOT_ENABLED=1               # 24-step SLOT eval (default: on)
+  SLOT_STEPS=24                # SLOT optimization steps
+  TTT_ENABLED=1                # Score-first TTT eval (default: on)
+  TTT_EPOCHS=3                 # TTT training epochs per window
+  MAX_WALLCLOCK_SECONDS=600    # Training time limit
+  TARGET_MB=15.9               # Artifact size target in MB
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+1. "ModuleNotFoundError: No module named 'flash_attn_interface'"
+   → Install flash_attn_3: pip install flash_attn_3 --find-links https://windreamer.github.io/flash-attention3-wheels/cu128_torch291
+
+2. "VOCAB_SIZE=8192 does not match tokenizer vocab_size=1024"
+   → Wrong tokenizer. Re-download with --variant sp8192 flag.
+
+3. "No fineweb_train_*.bin files found"
+   → Data not downloaded. Run Step 3 above.
+
+4. Out of memory
+   → Should not happen on 8x H100 80GB. If it does, reduce TRAIN_BATCH_TOKENS.
+
+5. Artifact exceeds 16MB
+   → Pruning logic handles this automatically. If still too big, lower TARGET_MB to 15.8.
+
+6. TTT eval takes too long (>300s)
+   → Reduce TTT_EPOCHS=1 or set TTT_ENABLED=0 and use SLOT score instead.
+
+7. Training reaches only ~3000 steps (expected ~4500-5000)
+   → Check GPU utilization. Triple loop adds overhead. 3000+ steps is still viable.
+
+================================================================================
+COMPETITION RULES REMINDER
+================================================================================
+
+- Max training time: 600 seconds on 8x H100 SXM
+- Max artifact size: 16,000,000 bytes (code + quantized model)
+- Must beat current SOTA by >= 0.005 nats at p<0.01 (3-seed mean)
+- Current SOTA: 1.1147 BPB (PR #1019, merged)
+- Open frontier: ~1.0791 BPB (PR #1420, open)
+- val_bpb is the official metric (byte-level bits-per-byte)
